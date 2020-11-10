@@ -17,6 +17,6 @@ TODO:
 - Prettier logic of checker (now it's very badly in something places)
 
 Very thanks to:
-https://github.com/gammazero/workerpool - the best workerpool i have seen
-https://github.com/cheggaaa/pb/v3 - the most prettier console progress bar
-https://github.com/h12w/socks - so simple in using, love it
+- https://github.com/gammazero/workerpool - the best workerpool i have seen
+- https://github.com/cheggaaa/pb/v3 - the most prettier console progress bar
+- https://github.com/h12w/socks - so simple in using, love it
