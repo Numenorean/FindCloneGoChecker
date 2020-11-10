@@ -1,7 +1,13 @@
 Example of simple ~~non-multithreaded~~ already multithreaded checker has written on Golang
 
+Example of sorting:
+![g](https://i.imgur.com/T4ZN97L.png)
+
+Example of work:
+![g](https://i.imgur.com/0jZ2E9m.png)
+
 Already done:
-- Proxy support (all types)
+- Proxy support (all types, use just http instead https)
 - Reading combos from file
 - Log formatting
 - Flexible modification for new checker
