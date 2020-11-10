@@ -1,4 +1,4 @@
-Example of simple ~~non-multithreaded~~ already multithreaded checker has written on Golang
+**Example of simple ~~non-multithreaded~~ already multithreaded checker has written on Golang**
 
 Example of sorting:
 ![g](https://i.imgur.com/T4ZN97L.png)
