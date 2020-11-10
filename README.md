@@ -1,4 +1,4 @@
-Simple ~~non-multithreaded~~ already multithreaded checker has written on Golang
+Example of simple ~~non-multithreaded~~ already multithreaded checker has written on Golang
 
 Already done:
 - Proxy support (all types)
