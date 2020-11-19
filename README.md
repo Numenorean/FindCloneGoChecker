@@ -15,6 +15,7 @@ Already done:
 - Write hits to file
 - Hits and customs Sorting
 - Showing statistic in console title
+- Updating proxies with link, every n seconds
 
 
 TODO:
